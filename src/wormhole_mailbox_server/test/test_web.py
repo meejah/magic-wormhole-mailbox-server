@@ -1,4 +1,4 @@
-import io, time
+import io
 from unittest import mock
 import treq
 from twisted.trial import unittest
@@ -575,8 +575,8 @@ class WebSocketAPI(_Util, ServerBase, unittest.TestCase):
 
         yield c1.close()
         # wait for the server to notice the socket has closed
-        started = time.time()
-        while mb1.has_listeners() and (time.time()-started < 5.0):
+        started = reactor.seconds()
+        while mb1.has_listeners() and (reactor.seconds()-started < 5.0):
             d = defer.Deferred()
             reactor.callLater(0.01, d.callback, None)
             yield d
