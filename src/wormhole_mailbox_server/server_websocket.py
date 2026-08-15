@@ -198,7 +198,7 @@ class WebSocketServer(websocket.WebSocketServerProtocol):
         self.send("welcome", welcome=welcome)
 
     def onMessage(self, payload, isBinary):
-        server_rx = time.time()
+        server_rx = self._reactor.seconds()  # time.time()
         msg = bytes_to_dict(payload)
         try:
             if "type" not in msg:
@@ -373,7 +373,7 @@ class WebSocketServer(websocket.WebSocketServerProtocol):
 
     def send(self, mtype, **kwargs):
         kwargs["type"] = mtype
-        kwargs["server_tx"] = time.time()
+        kwargs["server_tx"] = self._reactor.seconds()  # time.time()
         payload = dict_to_bytes(kwargs)
         self.sendMessage(payload, False)
 

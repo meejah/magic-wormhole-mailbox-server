@@ -285,6 +285,7 @@ class NameplateCrowded(unittest.TestCase):
             "ws://localhost:4000/v1",
             self.server,
         )
+        factory.reactor = self.reactor
         addr = IPv4Address("TCP", "localhost", 4000)
         return factory.buildProtocol(addr)
 
