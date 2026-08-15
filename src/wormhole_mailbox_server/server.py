@@ -73,8 +73,9 @@ class Mailbox:
         db.commit() # XXX: reconcile the need for this with the comment above
 
     def _touch(self, when):
-        self._db.execute("UPDATE `mailboxes` SET `updated`=? WHERE `id`=?",
-                         (when, self._mailbox_id))
+        if not self.is_crowded():
+            self._db.execute("UPDATE `mailboxes` SET `updated`=? WHERE `id`=?",
+                             (when, self._mailbox_id))
 
     def get_messages(self):
         messages = []
