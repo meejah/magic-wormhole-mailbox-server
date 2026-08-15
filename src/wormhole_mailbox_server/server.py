@@ -467,23 +467,34 @@ class AppNamespace:
         return Usage(started=started, waiting_time=waiting_time,
                      total_time=total_time, result=result)
 
+    def _nameplate_crowded(self, nameplate_id):
+        """
+        Returns True if `nameplate_id` has more than 2 sides connected
+        """
+        rows = db.execute("SELECT * FROM `nameplate_sides`"
+                          " WHERE `nameplates_id`=?", (nameplate_id,)).fetchall()
+        return len(rows) > 2
+
     def prune(self, now, old):
-        # The pruning check runs every 10 minutes, and "old" is defined to be
-        # 11 minutes ago (unit tests can use different values). The client is
-        # allowed to disconnect for up to 9 minutes without losing the
-        # channel (nameplate, mailbox, and messages).
+        """
+        The pruning check runs every 10 minutes, and "old" is
+        defined to be 11 minutes ago (unit tests can use different
+        values). The client is allowed to disconnect for up to 9
+        minutes without losing the channel (nameplate, mailbox, and
+        messages).
 
-        # Each time a client does something, the mailbox.updated field is
-        # updated with the current timestamp. If a client is subscribed to
-        # the mailbox when pruning check runs, the "updated" field is also
-        # updated. After that check, if the "updated" field is "old", the
-        # channel is deleted.
+        Each time a client does something, the mailbox.updated field
+        is updated with the current timestamp. If a client is
+        subscribed to the mailbox when pruning check runs, the
+        "updated" field is also updated. After that check, if the
+        "updated" field is "old", the channel is deleted.
 
-        # For now, pruning is logged even if log_requests is False, to debug
-        # the pruning process, and since pruning is triggered by a timer
-        # instead of by user action. It does reveal which mailboxes were
-        # present when the pruning process began, though, so in the log run
-        # it should do less logging.
+        For now, pruning is logged even if log_requests is False, to
+        debug the pruning process, and since pruning is triggered by a
+        timer instead of by user action. It does reveal which
+        mailboxes were present when the pruning process began, though,
+        so in the log run it should do less logging.
+        """
         log.msg(f" prune begins ({self._app_id})")
         db = self._db
         modified = False
