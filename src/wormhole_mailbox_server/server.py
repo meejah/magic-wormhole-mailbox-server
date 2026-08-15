@@ -179,6 +179,15 @@ class Mailbox:
         self._listeners = {}
         self._app.free_mailbox(self._mailbox_id)
 
+    def is_crowded(self):
+        """
+        Return True if this Mailbox has more than 2 sides
+        """
+        rows = self._db.execute("SELECT * FROM `mailbox_sides`"
+                          " WHERE `mailbox_id`=?",
+                          (self._mailbox_id,)).fetchall()
+        return len(rows) > 2
+
     def _shutdown(self):
         # used at test shutdown to accelerate client disconnects
         for (send_f, stop_f) in self._listeners.values():
@@ -399,10 +408,7 @@ class AppNamespace:
         # update the mailbox.updated timestamp
         mailbox.open(side, when)
         db.commit()
-        rows = db.execute("SELECT * FROM `mailbox_sides`"
-                          " WHERE `mailbox_id`=?",
-                          (mailbox_id,)).fetchall()
-        if len(rows) > 2:
+        if mailbox.is_crowded():
             raise CrowdedError("too many sides have opened this mailbox")
         return mailbox
 
