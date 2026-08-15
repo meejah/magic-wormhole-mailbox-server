@@ -1,9 +1,11 @@
 import json
 from twisted.trial import unittest
-from twisted.internet.defer import inlineCallbacks
+from twisted.internet.defer import inlineCallbacks, Deferred
 from twisted.internet.address import IPv4Address
 from ..server_websocket import WebSocketServerFactory
 from ..connections import ConnectionTable
+from ..server import make_server
+from ..database import create_channel_db
 from autobahn.twisted.testing import create_pumper, create_memory_agent, MemoryReactorClock
 from autobahn.twisted.websocket import WebSocketClientProtocol
 
@@ -191,3 +193,169 @@ class WebSocket(unittest.TestCase):
                 "port": 54321,
             }
         )
+
+
+class FakeClient(WebSocketClientProtocol):
+    """
+    A client that collects messages and allows tests to interact
+    as they see fit.
+    """
+    # FIXME: half of this is just "Next" from fowl.util .. can we
+    # export that utility somehow?
+
+    def __init__(self, *args, **kw):
+        self._messages = []
+        self._awaiters = []
+        super().__init__(*args, **kw)
+
+    def next_message(self):
+        if not self._messages:
+            d = Deferred()
+            self._awaiters.append(d)
+        else:
+            result = self._messages.pop(0)
+            d = Deferred()
+            if 'error' in result:
+                d.errback(RuntimeError(result['error']))
+            else:
+                d.callback(result)
+        return d
+
+    @inlineCallbacks
+    def wait_for(self, message_type, cleanup_on_error=True):
+        """
+        Wait for a specific 'type' key in a message, ignorning all others.
+        If a type=error message arrives, this will errback
+        """
+        while True:
+            try:
+                msg = yield self.next_message()
+            except Exception:
+                if cleanup_on_error:
+                    self.sendClose()
+                    yield self.is_closed
+                raise
+            if msg['type'] == message_type:
+                return msg
+        # cannot reach
+
+    def onMessage(self, payload, isBinary):
+        print("<   ", payload)
+        msg = json.loads(payload)
+        if self._awaiters:
+            notify = self._awaiters
+            self._awaiters = []
+            for d in notify:
+                if 'error' in msg:
+                    d.errback(RuntimeError(msg['error']))
+                else:
+                    d.callback(msg)
+        else:
+            self._messages.append(msg)
+        return super().onMessage(payload, isBinary)
+
+
+class NameplateCrowded(unittest.TestCase):
+    """
+    We don't always want additional messages to keep a nameplate alive.
+
+    For example, repeated CLAIMs on an already-crowded nameplate
+    should not continue to retain it forever.
+
+    This suite uses a real server object.
+    """
+
+    def setUp(self):
+        self.pumper = create_pumper()
+        self.reactor = MemoryReactorClock()
+        self.db = create_channel_db(":memory:")
+        self.server = make_server(self.db)
+        return self.pumper.start()
+
+    def tearDown(self):
+        return self.pumper.stop()
+
+    def create_server_protocol(self):
+        """
+        Used by the Agent to create the in-memory transport server-side
+        WebSocket protocol (we actually create the 'real' protocol
+        objects since that is what we're testing here).
+        """
+        factory = WebSocketServerFactory(
+            "ws://localhost:4000/v1",
+            self.server,
+        )
+        addr = IPv4Address("TCP", "localhost", 4000)
+        return factory.buildProtocol(addr)
+
+    @inlineCallbacks
+    def create_proto(self, agent, side, client, nameplate=None, cleanup_on_error=True):
+        proto = yield agent.open("ws://localhost:4000/v1", {}, lambda: client)
+
+        orig_send = proto.sendMessage
+
+        def logSendMessage(payload):
+            print("   >", payload)
+            return orig_send(payload)
+        proto.sendMessage = logSendMessage
+
+        proto.sendMessage(
+            json.dumps({
+                "type": "bind",
+                "appid": "test",
+                "side": side,
+            }).encode("utf8")
+        )
+        if not nameplate:
+            proto.sendMessage(
+                json.dumps({
+                    "type": "allocate",
+                    "appid": "test",
+                    "side": side,
+                }).encode("utf8")
+            )
+
+            msg = yield proto.wait_for("allocated", cleanup_on_error)
+            nameplate = msg["nameplate"]
+
+        proto.sendMessage(
+            json.dumps({
+                "type": "claim",
+                "appid": "test",
+                "side": side,
+                "nameplate": nameplate,
+            }).encode("utf8")
+        )
+
+        yield proto.wait_for("claimed", cleanup_on_error)
+        return proto, nameplate
+
+
+    @inlineCallbacks
+    def test_crowded(self):
+        """
+        A nameplate with 3 sides is CROWDED
+        """
+
+        agent = create_memory_agent(
+            self.reactor,
+            self.pumper,
+            self.create_server_protocol,
+        )
+
+        proto0, nameplate = yield self.create_proto(agent, "one", FakeClient())
+        proto1, _ = yield self.create_proto(agent, "two", FakeClient(), nameplate)
+        with self.assertRaises(RuntimeError):
+            proto2, _ = yield self.create_proto(agent, "three", FakeClient(), nameplate)
+
+        already = self.db.execute("SELECT * FROM `nameplate_sides`").fetchall()
+        print("sides", already)
+        already = self.db.execute("SELECT * FROM `nameplates`").fetchall()
+        print("nameplates", already)
+
+        for p in (proto0, proto1):  # , proto2):
+            p.sendClose()
+            yield p.is_closed
+
+        #breakpoint()
+
