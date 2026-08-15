@@ -158,7 +158,7 @@ class WebSocketServer(websocket.WebSocketServerProtocol):
         # address_id is None if the address tracker is disabled (no --addrid-db=)
         address_id = self.factory._server.get_address_id(peer_type, peer_host)
         self._addr_id = address_id # for logging
-        now = time.time()
+        now = self.factory.reactor.seconds()
         self._connection_tracker = self.factory._server.connection_established(address_id, now)
 
         if rv.get_log_requests():

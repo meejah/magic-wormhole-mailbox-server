@@ -472,8 +472,8 @@ class AppNamespace:
         """
         Returns True if `nameplate_id` has more than 2 sides connected
         """
-        rows = db.execute("SELECT * FROM `nameplate_sides`"
-                          " WHERE `nameplates_id`=?", (nameplate_id,)).fetchall()
+        rows = self._db.execute("SELECT * FROM `nameplate_sides`"
+                                " WHERE `nameplates_id`=?", (nameplate_id,)).fetchall()
         return len(rows) > 2
 
     def prune(self, now, old):

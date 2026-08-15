@@ -92,7 +92,7 @@ def makeService(config, channel_db="relay.sqlite", reactor=reactor):
 
     # initialize first generation of the address-id tracking table,
     # ignored if the server didn't build a tracker.
-    server.check_addrid_generation(time.time(), generation_duration, force=True)
+    server.check_addrid_generation(reactor.seconds(), generation_duration, force=True)
 
     # clear stale connection records from previous run
     server.clear_connections()
