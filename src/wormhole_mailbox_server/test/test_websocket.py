@@ -346,17 +346,21 @@ class NameplateCrowded(unittest.TestCase):
 
         proto0, nameplate = yield self.create_proto(agent, "one", FakeClient())
         proto1, _ = yield self.create_proto(agent, "two", FakeClient(), nameplate)
+
+        # we have two sides now, give some time gab (more obvious debugging)
+        self.reactor.advance(123)
+
         with self.assertRaises(RuntimeError):
             proto2, _ = yield self.create_proto(agent, "three", FakeClient(), nameplate)
 
-        already = self.db.execute("SELECT * FROM `nameplate_sides`").fetchall()
-        print("sides", already)
-        already = self.db.execute("SELECT * FROM `nameplates`").fetchall()
-        print("nameplates", already)
+        app = self.server.get_app("test")
+        before = app.get_nameplate_ids()
+        app.prune(self.reactor.seconds(), self.reactor.seconds() - 42)
+        after = app.get_nameplate_ids()
 
-        for p in (proto0, proto1):  # , proto2):
+        assert len(before) == 1, "should be one active nameplate before prune()"
+        assert after == set(), "prune() should remove the CROWDED nameplate"
+
+        for p in (proto0, proto1):
             p.sendClose()
             yield p.is_closed
-
-        #breakpoint()
-
