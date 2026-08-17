@@ -43,7 +43,6 @@ class Mailbox:
         # send_f() takes a JSONable object, stop_f() has no args
 
     def open(self, side, when):
-        # requires caller to db.commit()
         assert isinstance(side, str), type(side)
         db = self._db
 
@@ -69,13 +68,15 @@ class Mailbox:
         # then get shut down. Those clients will wake up and re-send the
         # 'close', until they receive the 'closed' ack message.
 
+        db.commit()
+        if self.is_crowded():
+            raise CrowdedError("too many sides have opened this mailbox")
         self._touch(when)
-        db.commit() # XXX: reconcile the need for this with the comment above
+        db.commit()
 
     def _touch(self, when):
-        if not self.is_crowded():
-            self._db.execute("UPDATE `mailboxes` SET `updated`=? WHERE `id`=?",
-                             (when, self._mailbox_id))
+        self._db.execute("UPDATE `mailboxes` SET `updated`=? WHERE `id`=?",
+                         (when, self._mailbox_id))
 
     def get_messages(self):
         messages = []
@@ -408,9 +409,7 @@ class AppNamespace:
         # delegate to mailbox.open() to add a row to mailbox_sides, and
         # update the mailbox.updated timestamp
         mailbox.open(side, when)
-        db.commit()
-        if mailbox.is_crowded():
-            raise CrowdedError("too many sides have opened this mailbox")
+
         return mailbox
 
     def free_mailbox(self, mailbox_id):
