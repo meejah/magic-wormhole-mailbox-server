@@ -453,7 +453,7 @@ class WebSocketAPI(_Util, ServerBase, unittest.TestCase):
         app = self._server.get_app("appid")
         mb1 = app.open_mailbox("mb1", "side2", 0)
         l1 = []; stop1 = []; stop1_f = lambda: stop1.append(True)
-        mb1.add_listener("handle1", l1.append, stop1_f)
+        mb1.add_listener("handle1", l1.append, stop1_f, lambda: None)
 
         c1.send("add") # didn't open first
         err = yield c1.next_non_ack()

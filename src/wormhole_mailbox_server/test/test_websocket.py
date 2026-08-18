@@ -264,7 +264,7 @@ class MagicWormholeClientProtocol:
     def __init__(self, proto, side):
         self._proto = proto
         self._side = side
-
+        self._mailbox = None
 
     @inlineCallbacks
     def allocate(self):
@@ -281,7 +281,7 @@ class MagicWormholeClientProtocol:
 
         msg = yield self._proto.wait_for("allocated", cleanup_on_error=True)
         nameplate = msg["nameplate"]
-        yield self.claim(nameplate)
+        self._mailbox = yield self.claim(nameplate)
         return nameplate
 
     @inlineCallbacks
@@ -298,7 +298,27 @@ class MagicWormholeClientProtocol:
             }).encode("utf8")
         )
         msg = yield self._proto.wait_for("claimed", cleanup_on_error=True)
+        self._mailbox = msg["mailbox"]
         return msg["mailbox"]
+
+    @inlineCallbacks
+    def open(self):
+        """
+        Does an OPEN on the given mailbox id
+        """
+        if self._mailbox is None:
+            raise RuntimeError("No mailbox_id yet")
+        self._proto.sendMessage(
+            json.dumps({
+                "type": "open",
+                "appid": "test",
+                "side": self._side,
+                "mailbox": self._mailbox,
+            }).encode("utf8")
+        )
+        # there is no "opened" ..
+        msg = yield self._proto.wait_for("ack", cleanup_on_error=True)
+        return
 
     @inlineCallbacks
     def pake(self, pake):
@@ -306,14 +326,25 @@ class MagicWormholeClientProtocol:
         send a (usually fake) pake message
         """
         # pake must be bytes
+        assert self._mailbox is not None, "need a Mailbox to ADD"
         self._proto.sendMessage(
             json.dumps({
-                "type": "pake",
-                "pake_v1": pake,
+                "type": "add",
+                "mailbox": self._mailbox,
+                "phase": "pake",
+                "body": pake, # usually hex-encoded {"pake_v1": ...}
             }).encode("utf8")
         )
         # (is there some ACK we can wait for?)
         yield
+
+    @inlineCallbacks
+    def expect_error(self):
+        """
+        Waits for an error message to arrive (which will also
+        cause an exception to be raised with the error)
+        """
+        yield self._proto.wait_for("error")
 
     @inlineCallbacks
     def close(self):
@@ -447,11 +478,14 @@ class NameplateCrowded(unittest.TestCase):
 
         alice = yield self.create_proto(agent, "alice", ClientWebSocket())
         nameplate = yield alice.allocate()
+        yield alice.open()
+
         bob = yield self.create_proto(agent, "bob", ClientWebSocket())
-        mb = yield bob.claim(nameplate)
+        yield bob.claim(nameplate)
+        yield bob.open()
 
         # alice has done some things, and now disappears after doing PAKE
-        #yield alice.pake("pake")
+        yield alice.pake("pake")
         yield alice.close()
 
         # carol shows up, making the mailbox "crowded"
@@ -459,6 +493,9 @@ class NameplateCrowded(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             yield carol.claim(nameplate)
 
-        # error: bob didn't get notified, we shouldn't have to
-        # magically know to close bob's connection here.
-        ##yield bob.close()
+        # previously, bob would now be "stuck" forever: waiting for
+        # messages that will never come, not knowing the mailbox is
+        # now "crowded". Broadcasting this error solves that, so we
+        # need to wait for it.
+        with self.assertRaises(RuntimeError):
+            yield bob.expect_error()

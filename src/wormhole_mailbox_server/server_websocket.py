@@ -325,10 +325,12 @@ class WebSocketServer(websocket.WebSocketServerProtocol):
         def _send(sm):
             self.send("message", side=sm.side, phase=sm.phase,
                       body=sm.body, server_rx=sm.server_rx, id=sm.msg_id)
+        def _error(err):
+            self.send("error", error=err)
         def _stop():
             pass
         self._listening = True
-        for old_sm in self._mailbox.add_listener(self, _send, _stop):
+        for old_sm in self._mailbox.add_listener(self, _send, _stop, _error):
             _send(old_sm)
 
     def handle_add(self, msg, server_rx):

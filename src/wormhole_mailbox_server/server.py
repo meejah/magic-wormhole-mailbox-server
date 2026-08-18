@@ -91,9 +91,9 @@ class Mailbox:
             messages.append(sm)
         return messages
 
-    def add_listener(self, handle, send_f, stop_f):
+    def add_listener(self, handle, send_f, stop_f, err_f):
         #log.msg("add_listener", self._mailbox_id, handle)
-        self._listeners[handle] = (send_f, stop_f)
+        self._listeners[handle] = (send_f, stop_f, err_f)
         #log.msg(" added", len(self._listeners))
         return self.get_messages()
 
@@ -109,8 +109,12 @@ class Mailbox:
         return len(self._listeners)
 
     def broadcast_message(self, sm):
-        for (send_f, stop_f) in self._listeners.values():
+        for (send_f, stop_f, err_f) in self._listeners.values():
             send_f(sm)
+
+    def broadcast_error(self, err):
+        for (send_f, stop_f, err_f) in self._listeners.values():
+            err_f(err)
 
     def _add_message(self, sm):
         self._db.execute("INSERT INTO `messages`"
@@ -176,7 +180,7 @@ class Mailbox:
         db.commit()
         # Shut down any listeners, just in case they're still lingering
         # around.
-        for (send_f, stop_f) in self._listeners.values():
+        for (send_f, stop_f, err_f) in self._listeners.values():
             stop_f()
         self._listeners = {}
         self._app.free_mailbox(self._mailbox_id)
@@ -192,7 +196,7 @@ class Mailbox:
 
     def _shutdown(self):
         # used at test shutdown to accelerate client disconnects
-        for (send_f, stop_f) in self._listeners.values():
+        for (send_f, stop_f, err_f) in self._listeners.values():
             stop_f()
         self._listeners = {}
 
@@ -408,7 +412,14 @@ class AppNamespace:
 
         # delegate to mailbox.open() to add a row to mailbox_sides, and
         # update the mailbox.updated timestamp
-        mailbox.open(side, when)
+        try:
+            mailbox.open(side, when)
+        except CrowdedError:
+            # tell any other clients waiting for messages that this
+            # Mailbox is now "crowded" and thus cannot ever receive a
+            # new client nor messages
+            mailbox.broadcast_error("crowded")
+            raise
 
         return mailbox
 
