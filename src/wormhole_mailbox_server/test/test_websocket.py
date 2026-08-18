@@ -461,4 +461,4 @@ class NameplateCrowded(unittest.TestCase):
 
         # error: bob didn't get notified, we shouldn't have to
         # magically know to close bob's connection here.
-        yield bob.close()
+        ##yield bob.close()
