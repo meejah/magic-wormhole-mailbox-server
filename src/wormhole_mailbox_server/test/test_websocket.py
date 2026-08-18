@@ -195,7 +195,7 @@ class WebSocket(unittest.TestCase):
         )
 
 
-class FakeClient(WebSocketClientProtocol):
+class ClientWebSocket(WebSocketClientProtocol):
     """
     A client that collects messages and allows tests to interact
     as they see fit.
@@ -255,6 +255,72 @@ class FakeClient(WebSocketClientProtocol):
         return super().onMessage(payload, isBinary)
 
 
+class MagicWormholeClientProtocol:
+    """
+    Wraps an underlying WebSocket protocol object with
+    higher-level operations that a magic-wormhole connection can do.
+    """
+
+    def __init__(self, proto, side):
+        self._proto = proto
+        self._side = side
+
+
+    @inlineCallbacks
+    def allocate(self):
+        """
+        Does an ALLOCATE and returns the nameplate (also CLAIMs it)
+        """
+        self._proto.sendMessage(
+            json.dumps({
+                "type": "allocate",
+                "appid": "test",
+                "side": self._side,
+            }).encode("utf8")
+        )
+
+        msg = yield self._proto.wait_for("allocated", cleanup_on_error=True)
+        nameplate = msg["nameplate"]
+        yield self.claim(nameplate)
+        return nameplate
+
+    @inlineCallbacks
+    def claim(self, nameplate):
+        """
+        Attempts to CLAIM an existing nameplate
+        """
+        self._proto.sendMessage(
+            json.dumps({
+                "type": "claim",
+                "appid": "test",
+                "side": self._side,
+                "nameplate": nameplate,
+            }).encode("utf8")
+        )
+        msg = yield self._proto.wait_for("claimed", cleanup_on_error=True)
+        return msg["mailbox"]
+
+    @inlineCallbacks
+    def pake(self, pake):
+        """
+        send a (usually fake) pake message
+        """
+        # pake must be bytes
+        self._proto.sendMessage(
+            json.dumps({
+                "type": "pake",
+                "pake_v1": pake,
+            }).encode("utf8")
+        )
+        # (is there some ACK we can wait for?)
+        yield
+
+    @inlineCallbacks
+    def close(self):
+        self._proto.sendClose()
+        yield self._proto.is_closed
+
+
 class NameplateCrowded(unittest.TestCase):
     """
     We don't always want additional messages to keep a nameplate alive.
@@ -290,7 +356,14 @@ class NameplateCrowded(unittest.TestCase):
         return factory.buildProtocol(addr)
 
     @inlineCallbacks
-    def create_proto(self, agent, side, client, nameplate=None, cleanup_on_error=True):
+    def create_proto(self, agent, side, client):
+        """
+        Creates and returns a MagicWormholeClientProtocol wrapping
+        a websocket connection to the server process (in-memory no
+        real networking).
+
+        Does a BIND but nothing else
+        """
         proto = yield agent.open("ws://localhost:4000/v1", {}, lambda: client)
 
         orig_send = proto.sendMessage
@@ -307,30 +380,7 @@ class NameplateCrowded(unittest.TestCase):
                 "side": side,
             }).encode("utf8")
         )
-        if not nameplate:
-            proto.sendMessage(
-                json.dumps({
-                    "type": "allocate",
-                    "appid": "test",
-                    "side": side,
-                }).encode("utf8")
-            )
-
-            msg = yield proto.wait_for("allocated", cleanup_on_error)
-            nameplate = msg["nameplate"]
-
-        proto.sendMessage(
-            json.dumps({
-                "type": "claim",
-                "appid": "test",
-                "side": side,
-                "nameplate": nameplate,
-            }).encode("utf8")
-        )
-
-        yield proto.wait_for("claimed", cleanup_on_error)
-        return proto, nameplate
-
+        return MagicWormholeClientProtocol(proto, side)
 
     @inlineCallbacks
     def test_crowded(self):
@@ -344,23 +394,71 @@ class NameplateCrowded(unittest.TestCase):
             self.create_server_protocol,
         )
 
-        proto0, nameplate = yield self.create_proto(agent, "one", FakeClient())
-        proto1, _ = yield self.create_proto(agent, "two", FakeClient(), nameplate)
+        proto0 = yield self.create_proto(agent, "one", ClientWebSocket())
+        nameplate = yield proto0.allocate()
+        proto1 = yield self.create_proto(agent, "two", ClientWebSocket())
+        yield proto1.claim(nameplate)
 
         # we have two sides now, give some time gab (more obvious debugging)
         self.reactor.advance(123)
 
+        proto2 = yield self.create_proto(agent, "three", ClientWebSocket())
         with self.assertRaises(RuntimeError):
-            proto2, _ = yield self.create_proto(agent, "three", FakeClient(), nameplate)
+            yield proto2.claim(nameplate)
 
         app = self.server.get_app("test")
         before = app.get_nameplate_ids()
         app.prune(self.reactor.seconds(), self.reactor.seconds() - 42)
         after = app.get_nameplate_ids()
 
+        # TODO: once the "three" side comes in, we are CROWDED and
+        # then want to tell proto0 and proto1 about that, by sending
+        # them an error=crowded and disconnecting them.
+
         assert len(before) == 1, "should be one active nameplate before prune()"
         assert after == set(), "prune() should remove the CROWDED nameplate"
 
+        # proto0 and proto1 should both have received an ERROR now
+        # (todo timeout on these)
+        #yield proto0.wait_for("error")
+        #yield proto1.wait_for("error")
+
         for p in (proto0, proto1):
-            p.sendClose()
-            yield p.is_closed
+            yield p.close()
+
+    @inlineCallbacks
+    def test_disappearing_alice(self):
+        """
+        Scenario:
+
+        - alice arrives, ALLOCATEs, ADDs 'spake' and disconnects (no RELEASE)
+        - bob arrives, CLAIMs, OPENs, ADDs 'spake', ADDs 'version' (waits)
+        - carol (possible the 'alice' machine trying again from scratch) arrives
+
+        The Mailbox is now "crowded" (3 sides) so carol disconnects cleanly.
+        However, bob waits forever (this is an error).
+        """
+
+        agent = create_memory_agent(
+            self.reactor,
+            self.pumper,
+            self.create_server_protocol,
+        )
+
+        alice = yield self.create_proto(agent, "alice", ClientWebSocket())
+        nameplate = yield alice.allocate()
+        bob = yield self.create_proto(agent, "bob", ClientWebSocket())
+        mb = yield bob.claim(nameplate)
+
+        # alice has done some things, and now disappears after doing PAKE
+        #yield alice.pake("pake")
+        yield alice.close()
+
+        # carol shows up, making the mailbox "crowded"
+        carol = yield self.create_proto(agent, "carol", ClientWebSocket())
+        with self.assertRaises(RuntimeError):
+            yield carol.claim(nameplate)
+
+        # error: bob didn't get notified, we shouldn't have to
+        # magically know to close bob's connection here.
+        yield bob.close()
